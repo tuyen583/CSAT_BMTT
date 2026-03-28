@@ -157,7 +157,7 @@ def mix_columns(state):
 		s3 = state[3][c]
 		state[0][c] = gf_mul(s0, 2) ^ gf_mul(s1, 3) ^ s2 ^ s3
 		state[1][c] = s0 ^ gf_mul(s1, 2) ^ gf_mul(s2, 3) ^ s3
-		state[2][c] = s0 ^ s1 ^ gf_mul(s2, 2) ^ gf_mul(s3, 3)
+		state[2][c] = s0 ^ s1 ^ gf_mul(s2, 2) ^ gf_mul(ts3, 3)
 		state[3][c] = gf_mul(s0, 3) ^ s1 ^ s2 ^ gf_mul(s3, 2)
 
 
