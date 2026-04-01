@@ -8,13 +8,12 @@ import lab
 class AESDesktopUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("AES-128 Desktop Encrypt/Decrypt")
+        self.root.title("AES Desktop Encrypt/Decrypt")
         self.root.geometry("760x460")
         self.root.minsize(700, 420)
         self.root.configure(bg="#f4f6f8")
 
-        self.default_placeholder = "Nhập đúng 15 ký tự..."
-        self.key_text = "CSATBMTT_AESKEY!"  # 16-byte key cho AES-128
+        self.default_placeholder = "Nhập dữ liệu (đếm theo byte UTF-8)..."
 
         self._setup_style()
         self._build_layout()
@@ -35,7 +34,7 @@ class AESDesktopUI:
 
         title = ttk.Label(
             container,
-            text="AES-128 Encryption Timing",
+            text="AES-128/192/256 Encryption Timing",
             font=("Segoe UI", 18, "bold"),
             background="#f4f6f8",
         )
@@ -43,7 +42,7 @@ class AESDesktopUI:
 
         subtitle = ttk.Label(
             container,
-            text="Nhập chuỗi 15 ký tự, bấm Mã hóa/Giải mã để xem kết quả và thời gian.",
+            text="Padding PKCS7 được thêm tự động. Nhập dữ liệu bất kỳ và khóa có độ dài 16/24/32 byte (UTF-8).",
         )
         subtitle.pack(anchor=tk.W, pady=(4, 16))
 
@@ -52,7 +51,7 @@ class AESDesktopUI:
 
         input_card.columnconfigure(1, weight=1)
 
-        ttk.Label(input_card, text="Plain text (15 ký tự):", background="#ffffff").grid(
+        ttk.Label(input_card, text="Plain text:", background="#ffffff").grid(
             row=0, column=0, sticky=tk.W, padx=(0, 10), pady=(0, 8)
         )
 
@@ -60,11 +59,22 @@ class AESDesktopUI:
         self.input_entry = ttk.Entry(input_card, textvariable=self.input_var, width=56)
         self.input_entry.grid(row=0, column=1, sticky=tk.EW, pady=(0, 8))
 
-        self.char_count_label = ttk.Label(input_card, text="0/15", background="#ffffff")
+        self.char_count_label = ttk.Label(input_card, text="0 byte", background="#ffffff")
         self.char_count_label.grid(row=1, column=1, sticky=tk.W)
 
+        ttk.Label(input_card, text="AES key (16/24/32 byte UTF-8):", background="#ffffff").grid(
+            row=2, column=0, sticky=tk.W, padx=(0, 10), pady=(10, 8)
+        )
+
+        self.key_var = tk.StringVar(value="CSATBMTT_AESKEY!")
+        self.key_entry = ttk.Entry(input_card, textvariable=self.key_var, width=56)
+        self.key_entry.grid(row=2, column=1, sticky=tk.EW, pady=(10, 8))
+
+        self.key_count_label = ttk.Label(input_card, text="16 byte (hợp lệ)", background="#ffffff")
+        self.key_count_label.grid(row=3, column=1, sticky=tk.W)
+
         button_frame = ttk.Frame(input_card, style="Main.TFrame")
-        button_frame.grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(14, 0))
+        button_frame.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=(14, 0))
 
         ttk.Button(button_frame, text="Mã hóa + Giải mã", command=self.process).pack(side=tk.LEFT)
         ttk.Button(button_frame, text="Xóa", command=self.clear_all).pack(side=tk.LEFT, padx=(10, 0))
@@ -101,6 +111,7 @@ class AESDesktopUI:
         self.input_entry.bind("<FocusIn>", self._on_focus_in)
         self.input_entry.bind("<FocusOut>", self._on_focus_out)
         self.input_var.trace_add("write", self._update_char_count)
+        self.key_var.trace_add("write", self._update_char_count)
 
     def _set_placeholder(self):
         self.input_var.set(self.default_placeholder)
@@ -122,20 +133,34 @@ class AESDesktopUI:
         return text
 
     def _update_char_count(self, *_args):
-        length = len(self._current_input())
-        self.char_count_label.config(text=f"{length}/15")
+        plain_byte_len = len(lab.text_to_bytes(self._current_input()))
+        self.char_count_label.config(text=f"{plain_byte_len} byte")
+
+        key_byte_len = len(lab.text_to_bytes(self.key_var.get()))
+        if key_byte_len in (16, 24, 32):
+            self.key_count_label.config(text=f"{key_byte_len} byte (hợp lệ)")
+        else:
+            self.key_count_label.config(text=f"{key_byte_len} byte (không hợp lệ)")
 
     def process(self):
-        user_input = self._current_input().strip()
+        user_input = self._current_input()
+        key_text = self.key_var.get()
 
-        if len(user_input) != 15:
-            messagebox.showwarning("ảnh báo", "Vui lòng nhập đúng 15 ký tự.")
+        if not user_input.strip():
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập dữ liệu cần mã hóa.")
+            return
+
+        plain_bytes = lab.text_to_bytes(user_input)
+        key_bytes = lab.text_to_bytes(key_text)
+
+        if len(key_bytes) not in (16, 24, 32):
+            messagebox.showwarning(
+                "Cảnh báo",
+                "Vui lòng nhập khóa có độ dài 16, 24 hoặc 32 byte theo UTF-8.",
+            )
             return
 
         try:
-            plain_bytes = lab.text_to_bytes(user_input)
-            key_bytes = lab.text_to_bytes(self.key_text)
-
             t1 = time.perf_counter()
             cipher_bytes = lab.aes_encrypt_ecb(plain_bytes, key_bytes)
             t2 = time.perf_counter()
@@ -156,6 +181,7 @@ class AESDesktopUI:
 
     def clear_all(self):
         self._set_placeholder()
+        self.key_var.set("CSATBMTT_AESKEY!")
         self.cipher_value.config(text="-")
         self.plain_value.config(text="-")
         self.encrypt_time_value.config(text="-")

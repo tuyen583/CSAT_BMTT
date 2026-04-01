@@ -1,4 +1,5 @@
 import time
+import base64
 
 
 # AES constants
@@ -43,6 +44,7 @@ INV_S_BOX = [
 RCON = [
 	0x01, 0x02, 0x04, 0x08, 0x10,
 	0x20, 0x40, 0x80, 0x1B, 0x36,
+	0x6C, 0xD8, 0xAB, 0x4D,
 ]
 
 
@@ -61,19 +63,20 @@ def gf_mul(a, b):
 		count >>= 1
 	return result
 
+# Chuyen doi chuoi <-> byte theo encoding ro rang (mac dinh UTF-8).
+def text_to_bytes(text, encoding="utf-8"):
+    return list(text.encode(encoding))
 
-def text_to_bytes(text):
-	return [ord(c) for c in text]
-
-
-def bytes_to_text(data):
-	return "".join(chr(b) for b in data)
-
+def bytes_to_text(data, encoding="utf-8"):
+    return bytes(data).decode(encoding)
 
 def bytes_to_hex(data):
-	return "".join(format(b, "02x") for b in data)
+    return "".join(format(b, "02x") for b in data)
 
+def bytes_to_base64(data):
+    return base64.b64encode(bytes(data)).decode("ascii")
 
+# PKCS#7 padding: bo sung byte de du lieu co do dai chia het cho block size (16 byte).
 def pad_pkcs7(data, block_size=16):
 	# PKCS#7: bo sung N byte, moi byte deu co gia tri N.
 	pad_len = block_size - (len(data) % block_size)
@@ -81,7 +84,7 @@ def pad_pkcs7(data, block_size=16):
 		pad_len = block_size
 	return data + [pad_len] * pad_len
 
-
+# PKCS#7 unpadding: kiem tra va bo phan dem sau khi giai ma.
 def unpad_pkcs7(data):
 	# Kiem tra va bo phan dem PKCS#7 sau khi giai ma.
 	if not data:
@@ -94,7 +97,7 @@ def unpad_pkcs7(data):
 			raise ValueError("Dem PKCS7 khong hop le")
 	return data[:-pad_len]
 
-
+# Chuyen doi du lieu giua dang byte array va state 4x4 (theo cot) su dung trong AES. State la cau truc du lieu chinh duoc thao tac trong cac buoc ma hoa/giai ma.
 def to_state(block):
 	# Chuyen 16 byte thanh ma tran state 4x4 (theo cot) cua AES.
 	state = [[0] * 4 for _ in range(4)]
@@ -104,7 +107,7 @@ def to_state(block):
 		state[row][col] = block[i]
 	return state
 
-
+# Chuyen doi du lieu tu state 4x4 ve lai dang byte array 16 byte (theo cot) sau khi thuc hien cac buoc ma hoa/giai ma. State la cau truc du lieu chinh duoc thao tac trong cac buoc ma hoa/giai ma.
 def from_state(state):
 	# Chuyen state 4x4 ve lai mang 16 byte (theo cot).
 	block = [0] * 16
@@ -157,7 +160,7 @@ def mix_columns(state):
 		s3 = state[3][c]
 		state[0][c] = gf_mul(s0, 2) ^ gf_mul(s1, 3) ^ s2 ^ s3
 		state[1][c] = s0 ^ gf_mul(s1, 2) ^ gf_mul(s2, 3) ^ s3
-		state[2][c] = s0 ^ s1 ^ gf_mul(s2, 2) ^ gf_mul(ts3, 3)
+		state[2][c] = s0 ^ s1 ^ gf_mul(s2, 2) ^ gf_mul(s3, 3)
 		state[3][c] = gf_mul(s0, 3) ^ s1 ^ s2 ^ gf_mul(s3, 2)
 
 
@@ -182,14 +185,15 @@ def sub_word(word):
 	return [S_BOX[b] for b in word]
 
 
-def expand_key_128(key_bytes):
-	# Sinh 11 round key (0..10), moi round key gom 16 byte.
-	if len(key_bytes) != 16:
-		raise ValueError("Khoa AES-128 phai co 16 byte")
+def expand_key(key_bytes):
+	# Ho tro AES-128/192/256 voi khoa 16/24/32 byte.
+	if len(key_bytes) not in (16, 24, 32):
+		raise ValueError("Khoa AES phai co do dai 16, 24 hoac 32 byte")
 
-	nk = 4
+	nk = len(key_bytes) // 4
 	nb = 4
-	nr = 10
+	nr_map = {4: 10, 6: 12, 8: 14}
+	nr = nr_map[nk]
 	total_words = nb * (nr + 1)
 
 	words = []
@@ -202,6 +206,9 @@ def expand_key_128(key_bytes):
 			# Moi 4 tu: xoay, qua S-Box, roi XOR voi RCON.
 			temp = sub_word(rot_word(temp))
 			temp[0] ^= RCON[(i // nk) - 1]
+		elif nk > 6 and i % nk == 4:
+			# Rieng AES-256 co them buoc SubWord tai vi tri i % nk == 4.
+			temp = sub_word(temp)
 		new_word = [words[i - nk][j] ^ temp[j] for j in range(4)]
 		words.append(new_word)
 
@@ -215,22 +222,23 @@ def expand_key_128(key_bytes):
 
 
 def aes_encrypt_block(block, round_keys):
-	# Ma hoa 1 block 16 byte theo AES-128.
+	# Ma hoa 1 block 16 byte theo so round phu hop voi do dai khoa.
 	state = to_state(block)
+	nr = len(round_keys) - 1
 	# Round 0: chi AddRoundKey.
 	add_round_key(state, round_keys[0])
 
-	# Round 1..9: SubBytes -> ShiftRows -> MixColumns -> AddRoundKey.
-	for r in range(1, 10):
+	# Round 1..(nr-1): SubBytes -> ShiftRows -> MixColumns -> AddRoundKey.
+	for r in range(1, nr):
 		sub_bytes(state)
 		shift_rows(state)
 		mix_columns(state)
 		add_round_key(state, round_keys[r])
 
-	# Round 10: bo qua MixColumns.
+	# Round cuoi: bo qua MixColumns.
 	sub_bytes(state)
 	shift_rows(state)
-	add_round_key(state, round_keys[10])
+	add_round_key(state, round_keys[nr])
 
 	return from_state(state)
 
@@ -238,11 +246,12 @@ def aes_encrypt_block(block, round_keys):
 def aes_decrypt_block(block, round_keys):
 	# Giai ma 1 block 16 byte theo thu tu nguoc cua ma hoa.
 	state = to_state(block)
+	nr = len(round_keys) - 1
 	# Bat dau tu round key cuoi.
-	add_round_key(state, round_keys[10])
+	add_round_key(state, round_keys[nr])
 
-	# Round 9..1: InvShiftRows -> InvSubBytes -> AddRoundKey -> InvMixColumns.
-	for r in range(9, 0, -1):
+	# Round (nr-1)..1: InvShiftRows -> InvSubBytes -> AddRoundKey -> InvMixColumns.
+	for r in range(nr - 1, 0, -1):
 		inv_shift_rows(state)
 		inv_sub_bytes(state)
 		add_round_key(state, round_keys[r])
@@ -257,8 +266,7 @@ def aes_decrypt_block(block, round_keys):
 
 
 def aes_encrypt_ecb(plain_bytes, key_bytes):
-	# ECB: ma hoa tung block doc lap (de hoc thuat toan, khong dung cho du lieu nhay cam).
-	round_keys = expand_key_128(key_bytes)
+	round_keys = expand_key(key_bytes)
 	padded = pad_pkcs7(plain_bytes, 16)
 
 	cipher = []
@@ -269,33 +277,37 @@ def aes_encrypt_ecb(plain_bytes, key_bytes):
 
 
 def aes_decrypt_ecb(cipher_bytes, key_bytes):
-	# ECB giai ma tung block, sau do bo dem PKCS#7.
 	if len(cipher_bytes) % 16 != 0:
 		raise ValueError("Do dai ban ma phai chia het cho 16")
 
-	round_keys = expand_key_128(key_bytes)
-
-	plain_padded = []
+	round_keys = expand_key(key_bytes)
+	plain = []
 	for i in range(0, len(cipher_bytes), 16):
 		block = cipher_bytes[i:i + 16]
-		plain_padded.extend(aes_decrypt_block(block, round_keys))
-	return unpad_pkcs7(plain_padded)
+		plain.extend(aes_decrypt_block(block, round_keys))
+
+	return unpad_pkcs7(plain)
 
 
 def main():
-	print("=== CHUONG TRINH MA HOA/GIAI MA AES-128 (TU CAI DAT) ===")
-	print("Nhap chuoi toi thieu 15 ky tu (chu/so):")
+	print("=== CHUONG TRINH MA HOA/GIAI MA AES (128/192/256) ===")
+	print("Nhap chuoi toi thieu 16 ky tu (UTF-8):")
 	user_input = input("> ").strip()
+	user_bytes_len = len(user_input.encode("utf-8"))
 
-	if len(user_input) < 15:
-		print("Loi: Du lieu phai co toi thieu 15 ky tu.")
+	if user_bytes_len < 16:
+		print("Loi: Du lieu phai co do dai >= 16 ky tu (UTF-8).")
 		return
 
-	# Khoa 16 ky tu cho AES-128 (khong dung thu vien ma hoa co san).
-	key_text = "CSATBMTT_AESKEY!"
+	print("Nhap khoa AES (16/24/32 byte - UTF-8):")
+	key_text = input(">")
+	key_bytes_len = len(key_text.encode("utf-8"))
+	if key_bytes_len not in (16, 24, 32):
+		print("Loi: Khoa phai co do dai 16, 24 hoac 32 byte (UTF-8).")
+		return
 
-	plain_bytes = text_to_bytes(user_input)
-	key_bytes = text_to_bytes(key_text)
+	plain_bytes = text_to_bytes(user_input, "utf-8")
+	key_bytes = text_to_bytes(key_text, "utf-8")
 
 	t1 = time.perf_counter()
 	cipher_bytes = aes_encrypt_ecb(plain_bytes, key_bytes)
@@ -305,16 +317,17 @@ def main():
 	recovered_bytes = aes_decrypt_ecb(cipher_bytes, key_bytes)
 	t4 = time.perf_counter()
 
-	recovered_text = bytes_to_text(recovered_bytes)
+	recovered_text = bytes_to_text(recovered_bytes, "utf-8")
 
 	print("\n--- KET QUA ---")
-	print("Ban ro:        ", user_input)
-	print("Khoa (16 byte):", key_text)
-	print("Ban ma (hex):  ", bytes_to_hex(cipher_bytes))
-	print("Giai ma:       ", recovered_text)
+	print("Ban ro:", user_input)
+	print(f"Do dai ban ro: {user_bytes_len} byte (UTF-8)")
+	print(f"Khoa ({key_bytes_len} byte):", key_text)
+	print("Ban ma (hex):   ", bytes_to_hex(cipher_bytes))
+	print("Ban ma (base64):", bytes_to_base64(cipher_bytes))
+	print("Giai ma:", recovered_text)
 	print(f"Thoi gian ma hoa : {(t2 - t1) * 1000:.6f} ms")
 	print(f"Thoi gian giai ma: {(t4 - t3) * 1000:.6f} ms")
 
-
 if __name__ == "__main__":
-	main()
+    main()
